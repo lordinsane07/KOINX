@@ -17,6 +17,40 @@ import {
   ServerCrash
 } from 'lucide-react';
 
+/**
+ * Robust JSON fetch helper that parses response bodies securely and avoids throwing
+ * unhandled syntax errors when non-JSON content is returned.
+ */
+async function safeFetchJson(url, options = {}) {
+  const res = await fetch(url, options);
+  const contentType = res.headers.get('content-type');
+  const isJson = contentType && contentType.includes('application/json');
+
+  if (!res.ok) {
+    let message = `Request failed with status ${res.status}`;
+    if (isJson) {
+      try {
+        const err = await res.json();
+        message = err.error?.message || err.message || message;
+      } catch {}
+    } else {
+      try {
+        const text = await res.text();
+        if (text && text.length < 200) {
+          message = text;
+        }
+      } catch {}
+    }
+    throw new Error(message);
+  }
+
+  if (!isJson) {
+    throw new Error('Server returned an invalid response format (not JSON).');
+  }
+
+  return res.json();
+}
+
 export default function App() {
   // System Health States
   const [dbOnline, setDbOnline] = useState(true);
@@ -56,9 +90,7 @@ export default function App() {
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const res = await fetch('/health');
-        if (!res.ok) throw new Error('Offline');
-        const data = await res.json();
+        const data = await safeFetchJson('/health');
         setDbOnline(true);
         setRedisOnline(true);
         
@@ -104,18 +136,11 @@ export default function App() {
     };
 
     try {
-      const res = await fetch('/reconcile', {
+      const run = await safeFetchJson('/reconcile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error?.message || 'Failed to trigger reconciliation run.');
-      }
-
-      const run = await res.json();
       setRunId(run.runId);
       setRunStatus(run.status);
       setPage(1);
@@ -139,9 +164,7 @@ export default function App() {
 
     pollIntervalRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`/report/${id}/summary`);
-        if (!res.ok) throw new Error('Status summary fetch failed');
-        const report = await res.json();
+        const report = await safeFetchJson(`/report/${id}/summary`);
 
         setRunStatus(report.status);
 
@@ -165,9 +188,7 @@ export default function App() {
 
   const fetchSummaryMetrics = async (id) => {
     try {
-      const res = await fetch(`/report/${id}/summary`);
-      if (!res.ok) throw new Error('Summary fetch failed');
-      const data = await res.json();
+      const data = await safeFetchJson(`/report/${id}/summary`);
 
       setMatchedCount(data.summary.matched);
       setConflictingCount(data.summary.conflicting);
@@ -187,9 +208,7 @@ export default function App() {
         url += `&category=${cat}`;
       }
 
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Failed to retrieve items');
-      const data = await res.json();
+      const data = await safeFetchJson(url);
 
       setRecords(data.data);
       setTotalRecords(data.total);
