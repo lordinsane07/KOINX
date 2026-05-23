@@ -16,6 +16,19 @@ services:
       timeout: 5s
       retries: 3
 
+  # ─── Redis Service ──────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: koinx_reconciliation_queue
+    ports:
+      - '6379:6379'
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   # ─── Express App Service ───────────────────────────────────────────────────
   app:
     build: .
@@ -27,12 +40,17 @@ services:
       - NODE_ENV=production
       # Connect directly to the mongo container name via Docker DNS
       - MONGODB_URI=mongodb://mongo:27017/koinx_reconciliation
+      # Connect directly to the redis container name via Docker DNS
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - ALLOWED_FILE_BASE_DIR=./data
       - REPORT_OUTPUT_DIR=./reports
       - LOG_DIR=./logs
       - LOG_LEVEL=info
     depends_on:
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       # Mount reports and logs to the host machine for audit accessibility
@@ -42,3 +60,4 @@ services:
 
 volumes:
   mongo_data:
+

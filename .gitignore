@@ -14,3 +14,11 @@ coverage/
 *.njsproj
 *.sln
 *.swp
+
+# Project specifications & temporary workspace files
+prd.md
+.gemini/
+.agents/
+scratch/
+.system_generated/
+

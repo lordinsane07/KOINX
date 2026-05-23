@@ -7,6 +7,7 @@ import { assertSafePath } from '../../infrastructure/security/filePath.guard.js'
 import { assertFileSize } from '../../infrastructure/security/fileSize.guard.js';
 import { logger } from '../../infrastructure/logger.js';
 import { RUN_STATUS } from '../../infrastructure/constants.js';
+import { dispatchReconcileJob } from '../../infrastructure/queue.js';
 
 export const reconcileRouter = Router();
 
@@ -89,11 +90,14 @@ reconcileRouter.post(
 
     // 4. Trigger background processing if new PENDING run
     if (run.status === RUN_STATUS.PENDING) {
-      logger.info(`Spawning background worker for run: ${run.runId}`);
-      // Defer execution to event loop without blocking current HTTP thread
-      setImmediate(() => {
-        reconcileService.executeRun(run.runId, safeUserPath, safeExchangePath);
-      });
+      logger.info(`Spawning background job dispatcher for run: ${run.runId}`);
+      // Dispatch the job using our production-ready queue mechanism
+      await dispatchReconcileJob(
+        run.runId,
+        safeUserPath,
+        safeExchangePath,
+        reconcileService.executeRun.bind(reconcileService),
+      );
 
       return res.status(202).json({
         runId: run.runId,

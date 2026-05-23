@@ -2,6 +2,8 @@ import app from './src/app.js';
 import { connectDb, disconnectDb } from './src/infrastructure/db.js';
 import { logger } from './src/infrastructure/logger.js';
 import { config } from './src/infrastructure/config.js';
+import { closeQueue } from './src/infrastructure/queue.js';
+import { closeWorker } from './src/workers/reconcile.worker.js';
 
 let server;
 
@@ -47,6 +49,14 @@ async function gracefulShutdown(signal) {
         resolve();
       });
     });
+  }
+
+  // Gracefully close BullMQ worker and queue
+  try {
+    await closeWorker();
+    await closeQueue();
+  } catch (err) {
+    logger.error('Error closing BullMQ background worker/queue', { error: err.message });
   }
 
   // Gracefully close MongoDB connection

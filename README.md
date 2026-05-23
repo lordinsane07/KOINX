@@ -1,203 +1,278 @@
-# KoinX Transaction Reconciliation Engine
+# KoinX Crypto Transaction Reconciliation Engine
 
-A production-grade, highly performant, and secure **Transaction Reconciliation Engine** built in Node.js (ESM). It ingests dual-source crypto transaction data (user exports and exchange exports), validates and normalises records side-by-side, runs a high-performance 4-pass matching algorithm using binary candidate windows and Decimal arithmetic, and produces paginated JSON reports and structured side-by-side CSV files.
+A production-grade, high-performance, and secure **Crypto Transaction Reconciliation Engine** built in Node.js (ESM). It ingests dual-source transaction data (user tax records and exchange ledger exports), validates and normalizes records side-by-side, runs an $O(N \log N)$ 4-pass matching algorithm using binary search candidate windowing and Decimal arithmetic, and produces paginated JSON reports alongside structured side-by-side CSV files.
+
+Equipped with a dual-mode background worker queue (BullMQ + Redis) that transparently falls back to local thread execution if Redis is offline, it is designed for zero-friction local testing while remaining fully scaled for clustered production deployments.
 
 ---
 
-## Key Features
+## 🏗️ Architectural Layering & Data Flow
 
-1. **Robust Ingestion Pipeline:** Streaming CSV parser utilizing standard Node.js pipelines. Features early size boundary validation (file size guard) and NoSQL injection protection.
-2. **Zero Silent Data Loss Policy:** Messy, malformed, or invalid rows are never silently dropped; they are captured immediately, marked `isValid: false`, flagged with granular data quality error codes, and listed in the final report's unmatched categories with their reasons.
+The engine strictly follows a modular, five-tier architecture. Each tier is strictly decoupled, allowing independent testing and maintenance.
+
+```
+                  ┌────────────────────────────────────────┐
+                  │               HTTP Client              │
+                  └───────────────────┬────────────────────┘
+                                      │ REST Requests (JSON / Streams)
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 1. API LAYER (Express.js Router & Middlewares)                           │
+│    - Path Traversal Guard  - Rate Limiter       - Helmet Security Headers│
+│    - File Size Guard       - Body Parser        - Express Async Handlers │
+└─────────────────────────────────────┬────────────────────────────────────┘
+                                      │ Validated Ingest Payload
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 2. SERVICE LAYER (Orchestrators & Compilers)                             │
+│    - Ingestion Service     - Matching Service   - Report Exporter        │
+│    - Reconcile Service     - SHA-256 Idempotency Check                   │
+└─────────────────────────────────────┬────────────────────────────────────┘
+                                      │ Dispatch Background Job
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 3. WORKER LAYER (Dual-Mode Job Queue)                                    │
+│    - BullMQ Enqueue (Redis Active)  ──►  Background Worker Process       │
+│    - Local Event-Loop Fallback (Redis Offline) ──► setImmediate Thread   │
+└─────────────────────────────────────┬────────────────────────────────────┘
+                                      │ DB Persistence / Fetch Queries
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 4. REPOSITORY & DATA LAYER (Mongoose Schemas & Indexing)                  │
+│    - RawTransaction Repository      - NormalisedTransaction Repository   │
+│    - ReconciliationRun Repository   - ReportEntry Repository (Cursor)    │
+└─────────────────────────────────────┬────────────────────────────────────┘
+                                      │ Process Lean & Pure Operations
+                                      ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 5. PURE DOMAIN LAYER (Business & Math Rules — Zero I/O, Zero DB)         │
+│    - Asset Converter       - Row Validator      - Exact ID Linker        │
+│    - Date ISO Parser       - Decimal Normalizer - Proximity Matcher      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## ✨ Production-Grade Features
+
+1. **Clustered Background Job Queue (BullMQ + Redis):**
+   * Uses **BullMQ** for robust, cluster-safe background job scheduling. CPU-heavy reconciliation runs are dispatched off the web server process to keep HTTP request paths immediate and lightweight.
+   * **Dual-Mode Resiliency:** Detects Redis connectivity on boot. If Redis is active, it runs clustered. If Redis is offline, it automatically drops back to an event-loop `setImmediate` deferral, ensuring **zero-friction local evaluation**.
+2. **Defensive Path-Traversal & File Safety Security Guards:**
+   * **Path Guard:** Enforces strict boundary resolution. User-provided paths are fully resolved and forbidden from traversing outside the configured allowed directory (e.g., preventing `../../etc/passwd` injection).
+   * **File Size Guard:** Checks file buffers and stream sizes before parsing to block Denial of Service (DoS) attacks.
 3. **Advanced 4-Pass Matching Engine:**
-   - **Pass 1 (Exact ID Match):** Greedily links transactions with identical `txHash` or `exchangeId` values.
-   - **Pass 2 (Fuzzy Proximity Match):** Employs **binary search** to find candidate records in $O(\log n + w)$ time, filtering by asset alias maps and scoring via a multi-dimensional linear decay algorithm.
-   - **Pass 3 (Conflict Detection):** Identifies exact-ID matches whose timestamps, quantities, types, or assets differ beyond tolerances, classifying them as `CONFLICTING` and calculating exact field deltas.
-   - **Pass 4 (Remainder Assignment):** Leftover entries are pushed to their respective unmatched buckets.
-4. **Idempotency Guard:** MD5/SHA-256 fingerprint hashing of input files and configurations ensures duplicate submissions return cached results instantly.
-5. **Obsolescence & Rate Limiting:** Equipped with rate limiters, global Express error formatters, and Winston JSON-formatted rotating logs.
+   * **Pass 1 (Exact ID Link):** Greedily binds records featuring identical transaction hashes or exchange IDs.
+   * **Pass 2 (Fuzzy Proximity Match):** Employs **binary search** to slice transaction arrays in $O(\log n)$ candidate windows, scoring results via a multi-dimensional linear decay algorithm based on time, quantity, type, and hash bonuses.
+   * **Pass 3 (Conflict Detection):** Pinpoints matches whose parameters deviate beyond tolerances, flagging them as `CONFLICTING` and producing exact field deltas.
+   * **Pass 4 (Remainder Assignment):** Classifies left-overs into their respective user/exchange unmatched buckets.
+4. **Precision-Safe Arithmetic (Decimal.js):**
+   * Eliminates standard binary float problems (e.g., `0.1 + 0.2 === 0.30000000000000004`) which cause matching anomalies in financial systems. All transaction volumes, differences, and scores are processed using `Decimal.js`.
+5. **No Data Loss Policy:**
+   * Malformed or unparseable rows are never silently discarded. They are ingested, marked `isValid: false`, flagged with specific quality codes, and listed in the unmatched reports to enable complete auditability.
+6. **Graceful Shutdown Routines:**
+   * Handlers for `SIGINT` and `SIGTERM` ensure that when the server terminates, the BullMQ worker, Redis connections, and Mongoose database threads are cleanly closed down, preventing lost jobs or orphaned handles.
+7. **Idempotency Hashing:**
+   * Computes SHA-256 stream fingerprints of inputs and configurations during initialization. Redundant duplicate requests return cached reconciliation summaries in milliseconds.
 
 ---
 
-## Architectural Layering
+## ⚙️ Configuration Reference (`.env`)
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                        API Layer                        │
-│         Express.js routes · Joi schema validation       │
-├─────────────────────────────────────────────────────────┤
-│                      Service Layer                      │
-│      Ingestion service · Matching service · Reporter    │
-├─────────────────────────────────────────────────────────┤
-│                    Repository Layer                     │
-│          Mongoose Models (Raw, Normalised, Run, Entry)   │
-├─────────────────────────────────────────────────────────┤
-│                      Domain Layer                       │
-│     Pure functions: matchers · normalisers · validators │
-│                    (zero I/O)                           │
-├─────────────────────────────────────────────────────────┤
-│                    Infrastructure                       │
-│         DB connection · logger · config · security      │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## Configuration Reference (`.env`)
-
-Tolerances and environments can be set globally using environment variables or overridden dynamically on a per-request basis.
+Configure the engine globally via environment variables.
 
 | Variable Name | Default Value | Description |
-|---|---|---|
-| `PORT` | `3000` | Port for the HTTP server |
+| :--- | :--- | :--- |
+| `PORT` | `3000` | Port for the HTTP server to bind to |
 | `NODE_ENV` | `development` | Environment mode (`development`, `production`, `test`) |
-| `MONGODB_URI` | `mongodb://localhost:27017/koinx_reconciliation` | MongoDB connection URL |
-| `TIMESTAMP_TOLERANCE_SECONDS` | `300` | Default fuzzy matching window in seconds |
+| `MONGODB_URI` | `mongodb://localhost:27017/koinx_reconciliation` | MongoDB connection URL (Atlas cluster or local) |
+| `REDIS_HOST` | `localhost` | Redis server hostname for BullMQ queues |
+| `REDIS_PORT` | `6379` | Redis server port |
+| `WORKER_CONCURRENCY` | `3` | Parallel jobs a single background worker process can process |
+| `TIMESTAMP_TOLERANCE_SECONDS` | `300` | Default fuzzy time-proximity window in seconds |
 | `QUANTITY_TOLERANCE_PCT` | `0.01` | Default matching tolerance for quantities (e.g., 0.01 = 1%) |
-| `REQUIRE_EXACT_TYPE` | `false` | If true, fuzzy matcher requires identical canonical types |
+| `REQUIRE_EXACT_TYPE` | `false` | If true, fuzzy matcher requires identical canonical type values |
 | `ALLOWED_FILE_BASE_DIR` | `./data` | Directory containing allowed transaction CSVs (path traversal boundary) |
 | `MAX_CSV_FILE_BYTES` | `104857600` | Maximum file size in bytes (100MB) |
 | `REPORT_OUTPUT_DIR` | `./reports` | Target folder for side-by-side CSV exports |
-| `LOG_LEVEL` | `info` | Logging verbosity |
+| `LOG_DIR` | `./logs` | Target folder for rotating application log files |
+| `LOG_LEVEL` | `info` | Minimum logging verbosity (`info`, `warn`, `error`, `debug`) |
 
 ---
 
-## Setup & Running Locally
+## 🚀 Running the Project
 
-### Prerequisites
-- Node.js version **>= 20.0.0**
-- MongoDB instance running locally (or connection string to Atlas)
+### Option A: Clustered Docker Stack (Recommended)
+This spins up a complete, production-grade cluster containing the **Express API App**, **MongoDB**, and **Redis** instantly. No local installations of databases or dependencies are required.
 
-### 1. Install Dependencies
 ```bash
+# 1. Boot up the entire pre-wired stack in the background
+docker-compose up -d
+
+# 2. Monitor active logs (Web Server and BullMQ Worker initialization)
+docker-compose logs -f app
+```
+*The Express API and documentation are instantly running at `http://localhost:3000`.*
+
+---
+
+### Option B: Local Node.js Development Mode
+If you prefer running Node.js directly on your local system:
+
+**Prerequisites:**
+* Node.js version **>= 20.0.0**
+* MongoDB running locally (or MongoDB Atlas)
+* Redis running locally (optional; if offline, the engine falls back to local async threads automatically)
+
+```bash
+# 1. Install project dependencies
 npm install
-```
 
-### 2. Configure Environment
-Copy `.env.example` to `.env` and set your MongoDB URI:
-```bash
+# 2. Configure environment variables (copy template)
 cp .env.example .env
+
+# 3. Create indices on MongoDB database
+npm run verify:indexes
+
+# 4. Boot up development HMR server (Nodemon + local worker)
+npm run dev
 ```
-
-### 3. Place Input Files
-Place your CSV files inside the directory specified in `ALLOWED_FILE_BASE_DIR` (resolves to the project root `./` or `./data`).
-For immediate testing, sample files `user_transactions.csv` and `exchange_transactions.csv` have already been set up in the root folder!
-
-### 4. Run Application
-- **Development Mode (HMR with Nodemon):**
-  ```bash
-  npm run dev
-  ```
-- **Production Start:**
-  ```bash
-  npm start
-  ```
 
 ---
 
-## API Endpoints
+### Option C: Strict Production-Grade Deployment (Bare Metal / VM)
+To deploy this system to a production environment exactly:
 
-### 1. health health check (`GET /health`)
-Returns general server stats, environment info, and uptime.
+1. **Provision Infrastructure:** Spin up your production MongoDB database (e.g., Atlas Cluster) and Redis server.
+2. **Environment Configuration:** Inject your configuration variables. At a minimum, set:
+   ```env
+   NODE_ENV=production
+   PORT=80
+   MONGODB_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/reconciliation
+   REDIS_HOST=10.0.0.5
+   REDIS_PORT=6379
+   ALLOWED_FILE_BASE_DIR=/var/secure/reconciliation/uploads
+   REPORT_OUTPUT_DIR=/var/secure/reconciliation/reports
+   LOG_DIR=/var/log/reconciliation
+   LOG_LEVEL=warn
+   ```
+3. **Establish Storage Directories:** Ensure the directories for uploads, reports, and logs are established and writeable:
+   ```bash
+   mkdir -p /var/secure/reconciliation/uploads /var/secure/reconciliation/reports /var/log/reconciliation
+   ```
+4. **Bootstrap Application:**
+   * **Single Server Mode:** Run `npm start` which boots the Express web server and the BullMQ worker together inside the same Node event loop:
+     ```bash
+     npm start
+     ```
+   * **Clustered Microservices Mode (Recommended):** Scale your API server and workers independently using PM2 or individual Docker containers:
+     ```bash
+     # Start the stateless Express API Web Server (Scale as needed)
+     pm2 start server.js --name "reconcile-api" --node-args="--experimental-vm-modules"
+     
+     # Start separate background worker instances to execute matching queues
+     pm2 start src/workers/reconcile.worker.js --name "reconcile-worker" -i max
+     ```
+
+---
+
+## 🧪 Testing & Verification
+
+A comprehensive, isolated testing environment is provided. Integration tests run against an in-memory database server, completely isolated from your local databases.
+
+```bash
+# 1. Run all unit and integration tests (34 assertions — 100% quiet and green)
+npm run test
+
+# 2. Run unit tests only
+npm run test:unit
+
+# 3. Run integration tests only
+npm run test:int
+
+# 4. Generate coverage reports
+npm run test:coverage
+
+# 5. Run ESLint checks (strict Airbnb conventions — 0 errors, 0 warnings)
+npm run lint
+```
+
+---
+
+## 🔌 API Endpoints Reference
+
+### 1. Health Status (`GET /health`)
+Returns the environment details, database statuses, system uptime, and memory footprints.
 ```bash
 curl http://localhost:3000/health
 ```
 
 ### 2. Trigger Reconciliation (`POST /reconcile`)
-Launches the dual-source ingestion and fuzzy matching pipeline in the background. Enforces absolute path traversal guards and file size safety.
-- **Request Body:**
+Launches the dual-source ingestion and matching pipeline. Files are read from `ALLOWED_FILE_BASE_DIR`.
+* **Request Body:**
   ```json
   {
     "userFilePath": "user_transactions.csv",
     "exchangeFilePath": "exchange_transactions.csv",
     "config": {
       "timestampToleranceSecs": 300,
-      "quantityTolerancePct": 0.01
+      "quantityTolerancePct": 0.01,
+      "requireExactType": false
     }
   }
   ```
-- **Command:**
+* **Command:**
   ```bash
   curl -X POST -H "Content-Type: application/json" \
     -d '{"userFilePath": "user_transactions.csv", "exchangeFilePath": "exchange_transactions.csv"}' \
     http://localhost:3000/reconcile
   ```
-- **Response (202 Accepted):**
+* **Response (202 Accepted):**
   ```json
   {
-    "runId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+    "runId": "31ec3781-fcb4-4848-be0d-3f568a5aa3c4",
     "status": "PENDING",
-    "triggeredAt": "2026-05-23T17:40:00.000Z"
+    "triggeredAt": "2026-05-23T18:15:30.728Z"
   }
   ```
 
-### 3. Fetch Full Report (`GET /report/:runId`)
-Returns paginated report items including categories, matching scores, and reasons.
-- **Query Params:** `page` (default 1), `limit` (default 100), `category` (optional MATCHED/CONFLICTING/UNMATCHED_USER/UNMATCHED_EXCHANGE filter)
+### 3. Fetch Aggregate Summary (`GET /report/:runId/summary`)
+Returns matched/conflicting/unmatched counts, checksums, and configuration metadata.
 ```bash
-curl http://localhost:3000/report/a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d?page=1&limit=5
+curl http://localhost:3000/report/31ec3781-fcb4-4848-be0d-3f568a5aa3c4/summary
 ```
 
-### 4. Fetch Summary counts (`GET /report/:runId/summary`)
-Returns aggregate counts, file level checksums, and execution metrics.
+### 4. Fetch Full Paginated Report (`GET /report/:runId`)
+Returns paginated listing of all report entries.
+* **Query Params:** `page` (default 1), `limit` (default 100), `category` (optional filter: `MATCHED`, `CONFLICTING`, `UNMATCHED_USER`, `UNMATCHED_EXCHANGE`)
 ```bash
-curl http://localhost:3000/report/a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d/summary
+curl "http://localhost:3000/report/31ec3781-fcb4-4848-be0d-3f568a5aa3c4?page=1&limit=5"
 ```
 
-### 5. Fetch Unmatched Only (`GET /report/:runId/unmatched`)
-Returns paginated list of unmatched rows along with quality issues or matching failure reasons.
+### 5. Fetch Unmatched Rows (`GET /report/:runId/unmatched`)
+Returns paginated unmatched entries along with structural quality flags or matching failure reasons.
 ```bash
-curl http://localhost:3000/report/a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d/unmatched
+curl http://localhost:3000/report/31ec3781-fcb4-4848-be0d-3f568a5aa3c4/unmatched
 ```
 
-### 6. Side-by-Side CSV Export (`GET /report/:runId/download`)
-Generates and downloads a complete CSV featuring user and exchange fields side-by-side.
+### 6. Side-by-Side CSV Export Download (`GET /report/:runId/download`)
+Compiles user and exchange matching records side-by-side on unified rows. Downloads as a standard, auditor-ready CSV file.
 ```bash
-curl -o report.csv http://localhost:3000/report/a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d/download
+curl -o reconciliation_report.csv http://localhost:3000/report/31ec3781-fcb4-4848-be0d-3f568a5aa3c4/download
 ```
 
 ---
 
-## Data Quality Flag Codes
+## 🛠️ Data Quality Code Reference
+
+When transaction rows contain structural issues, they are saved under the unmatched categories and labeled with the following granular codes:
 
 | Flag | Meaning |
-|---|---|
-| `MISSING_FIELD` | Mandatory cell (timestamp, asset, type, quantity) was blank or absent |
-| `INVALID_TIMESTAMP` | Value was unparseable under standard ISO 8601 or regional formats |
-| `FUTURE_TIMESTAMP` | Date was set further than 1 hour in the future (beyond clock drift buffer) |
-| `INVALID_QUANTITY` | Quantity parsed to NaN, negative, zero, or infinity |
-| `QUANTITY_OVERFLOW` | Quantity exceeded the safety cap limit (1e15) |
-| `UNKNOWN_ASSET` | Asset was not resolvable under canonical alias tables (e.g. BTC, ETH) |
-| `UNKNOWN_TYPE` | Type was not mapping to BUY, SELL, TRANSFER, FEE, or REWARD |
-
----
-
-## Core Design Decisions
-
-1. **Modern ES Modules (ESM):** Utilizes Node.js native ESM (`import/export`) for modular, forward-compatible engineering. Named logger extensions guarantee seamless compatibility.
-2. **Binary Search Candidate Windowing:** During the fuzzy matching step, the exchange transactions are pre-sorted and target ranges are sliced using a custom $O(\log n)$ binary search. This ensures the algorithm scales gracefully to hundreds of thousands of rows without hitting a quadratic CPU bottleneck.
-3. **Decimal.js Precision:** Floating point arithmetic drift (e.g., IEEE 754 precision issues like `0.1 + 0.2 = 0.30000000000000004`) can cause false quantity conflicts when applying micro-level percentage tolerances. Using `Decimal.js` eliminates this class of bugs.
-4. **Idempotency Hashing:** Computes SHA-256 fingerprints of files and configuration parameters during run initialization to prevent processing duplicate files repeatedly, conserving resources.
-5. **NoSQL Injection and Security Guards:** Implements Express Mongo Sanitize and rigid directory-boundary path guards to block malicious file path query attempts (`../../etc/passwd`).
-
----
-
-## Testing
-
-A comprehensive suite of unit and integration tests is set up. Integration tests run against `mongodb-memory-server` ensuring 100% execution isolation.
-
-- **Run All Tests:**
-  ```bash
-  npm run test
-  ```
-- **Run Unit Tests only:**
-  ```bash
-  npm run test:unit
-  ```
-- **Run Integration Tests only:**
-  ```bash
-  npm run test:int
-  ```
-- **Run Code Coverage Analysis:**
-  ```bash
-  npm run test:coverage
-  ```
+| :--- | :--- |
+| `MISSING_FIELD` | A required field (timestamp, asset, type, or quantity) is missing or blank |
+| `INVALID_TIMESTAMP` | The cell timestamp is unparseable under standard ISO 8601 or regional formats |
+| `FUTURE_TIMESTAMP` | The transaction date resides in the future (exceeding clock drift tolerance buffer) |
+| `INVALID_QUANTITY` | The volume volume is zero, negative, or mathematically non-finite |
+| `QUANTITY_OVERFLOW` | The transaction volume exceeds the safety cap limit ($10^{15}$) |
+| `UNKNOWN_ASSET` | The ticker is unresolvable under standard alias maps (e.g., BTC, ETH) |
+| `UNKNOWN_TYPE` | The action type is unresolvable under canonical type mappings |
