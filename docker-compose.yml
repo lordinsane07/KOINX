@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  # ─── MongoDB Service ────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    container_name: koinx_reconciliation_db
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─── Express App Service ───────────────────────────────────────────────────
+  app:
+    build: .
+    container_name: koinx_reconciliation_app
+    ports:
+      - '3000:3000'
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      # Connect directly to the mongo container name via Docker DNS
+      - MONGODB_URI=mongodb://mongo:27017/koinx_reconciliation
+      - ALLOWED_FILE_BASE_DIR=./data
+      - REPORT_OUTPUT_DIR=./reports
+      - LOG_DIR=./logs
+      - LOG_LEVEL=info
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      # Mount reports and logs to the host machine for audit accessibility
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+volumes:
+  mongo_data:

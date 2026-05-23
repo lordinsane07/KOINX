@@ -1,0 +1,41 @@
+{
+  "assetAliases": {
+    "bitcoin": "BTC",
+    "xbt": "BTC",
+    "btc": "BTC",
+    "ether": "ETH",
+    "ethereum": "ETH",
+    "eth": "ETH",
+    "tether": "USDT",
+    "usd-t": "USDT",
+    "usdt": "USDT",
+    "solana": "SOL",
+    "sol": "SOL",
+    "binancecoin": "BNB",
+    "binance coin": "BNB",
+    "binance-coin": "BNB",
+    "bnb": "BNB",
+    "cardano": "ADA",
+    "ada": "ADA",
+    "dogecoin": "DOGE",
+    "doge": "DOGE",
+    "polygon": "MATIC",
+    "matic": "MATIC"
+  },
+  "typeAliases": {
+    "buy": "BUY",
+    "deposit": "BUY",
+    "credit": "BUY",
+    "sell": "SELL",
+    "withdrawal": "SELL",
+    "debit": "SELL",
+    "transfer": "TRANSFER",
+    "transfer_in": "TRANSFER",
+    "transfer_out": "TRANSFER",
+    "fee": "FEE",
+    "charge": "FEE",
+    "reward": "REWARD",
+    "staking_reward": "REWARD",
+    "interest": "REWARD"
+  }
+}
