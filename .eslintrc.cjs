@@ -4,6 +4,7 @@ module.exports = {
     node: true,
     jest: true,
   },
+  ignorePatterns: ['src/public'],
   parserOptions: {
     ecmaVersion: 'latest',
     sourceType: 'module',

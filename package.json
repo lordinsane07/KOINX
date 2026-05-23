@@ -19,7 +19,8 @@
     "format": "prettier --write \"src/**/*.js\" \"tests/**/*.js\"",
     "format:check": "prettier --check \"src/**/*.js\" \"tests/**/*.js\"",
     "seed": "node scripts/seed.js",
-    "verify:indexes": "node scripts/verifyIndexes.js"
+    "verify:indexes": "node scripts/verifyIndexes.js",
+    "build:frontend": "npm run build --prefix frontend"
   },
   "dependencies": {
     "bullmq": "^5.12.0",

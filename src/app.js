@@ -13,14 +13,21 @@ import { config } from './infrastructure/config.js';
 export const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-// Security headers
-app.use(helmet());
+// Security headers (allowing font and script CDNs for the premium frontend)
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+  }),
+);
 
 // CORS enablement
 app.use(cors());
 
 // Body parser
 app.use(express.json({ limit: '10mb' }));
+
+// Serve static client frontend from public folder
+app.use(express.static('src/public'));
 
 // NoSQL injection protection
 app.use(mongoSanitize());
